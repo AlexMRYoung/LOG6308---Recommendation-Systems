@@ -3,7 +3,8 @@ from utils.helpers import batchify, timeSince
 from utils.tokenizer import tokenize_corpus
 from model import CDL
 import torch, pickle, argparse, os, time, random
-
+from torch.utils.data import Dataset, DataLoader
+from data import dataSet
 
 def trainIters(X, model, finetune=False, n_epochs=10, iter=1, start_epoch=1, local_save_every=1000, 
                print_every=10, plot_every=100, save_every=5000, batch_size=64):
@@ -96,27 +97,13 @@ if __name__ == '__main__':
     parser.add_argument('--restore', type=str,default='n',help='restore ? (y/n)')
     parser.add_argument('--summaries_dir', type=str,default='./summaries',help='summary directory')
     FLAGS, unparsed = parser.parse_known_args()
-    
-    # Loading data
-    encoding = 'utf-8'
-    path_to_data = './data/'
-    path = path_to_data+"dataEmbeded.pkl"
-    
-    if not os.path.isfile(path_to_data+'processed_data.npy'):
-        with open(path, 'rb') as pickler:
-            data = pickle.load(pickler)
-        processed_data = tokenize_corpus(data[:,0], stop_words = False, BoW = True)
-        path = path_to_data+'processed_data.npy'
-        with open(path, 'wb') as file:
-            pickle.dump(processed_data, file)
-    else:
-        path = './data/processed_data.npy'
-        with open(path, 'rb') as file:
-            processed_data = pickle.load(file).toarray()
-            
+     
     import csv
     ratings = np.zeros((1000,3))
     
+    transformed_dataset = dataSet()
+    processed_data = DataLoader(transformed_dataset, batch_size=40, shuffle=True, num_workers=5)
+
     with open('./data/ratings_small.csv', 'r', newline='', encoding='utf-8') as f:
         csv_reader = csv.reader(f)
         for i, line in enumerate(csv_reader):
