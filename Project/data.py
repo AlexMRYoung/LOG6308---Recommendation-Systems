@@ -1,7 +1,9 @@
-import torch, pickle, os, csv
+import torch, pickle, os
 from torch.utils.data import Dataset
 use_cuda = torch.cuda.is_available()
 import numpy as np
+import pandas as pd
+from sklearn.utils import shuffle
 
 class pretrainDataset:
     def __init__(self, file_path, training=True):
@@ -22,7 +24,6 @@ class finetuneDataset(Dataset):
     def __init__(self, ratings_path, movies_data_path, training=True):
         assert os.path.isfile(ratings_path)
         # Loading data
-        encoding = 'utf-8'
         self.chunkSize = 1e5
         self.folder_path = '.'.join(ratings_path.split('.')[:-1])
         
@@ -33,20 +34,27 @@ class finetuneDataset(Dataset):
         
         if not os.path.isdir(self.folder_path):
             os.mkdir(self.folder_path)
+            
+            ratings_df = pd.read_csv(ratings_path)
+            ratings_df = shuffle(ratings_df).reset_index(drop=True)
+            input_size = self.movies_data.shape[1]
+            nb_users = ratings_df['userId'].max()
+            nb_movies = ratings_df['movieId'].nunique()
+            
+            with open(self.folder_path+'/params.pkl', 'wb') as pickler:
+                pickle.dump((input_size, nb_users, nb_movies), pickler)
+            
             self.currentPart = 0
             dataToSave = []
-            with open(ratings_path, 'r', encoding=encoding, newline='') as f:
-                reader = csv.reader(f)
-                next(reader, None)
-                for i, line in enumerate(reader):
-                    if int(line[1]) in self.movies_ids:
-                        if len(dataToSave) < self.chunkSize:
-                            dataToSave.append((int(line[0]),int(line[1]), float(line[2])))
-                        else:
-                            with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'wb') as new_file:
-                                pickle.dump(dataToSave, new_file) 
-                            dataToSave = []
-                            self.currentPart += 1
+            for i, line in ratings_df.iterrows():
+                if int(line['movieId']) in self.movies_ids:
+                    if len(dataToSave) < self.chunkSize:
+                        dataToSave.append((int(line['userId']),int(line['movieId']), float(line['rating'])))
+                    else:
+                        with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'wb') as new_file:
+                            pickle.dump(dataToSave, new_file) 
+                        dataToSave = []
+                        self.currentPart += 1
             if len(dataToSave) != 0:
                 with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'wb') as new_file:
                     pickle.dump(dataToSave, new_file)
@@ -77,6 +85,6 @@ class finetuneDataset(Dataset):
         movieData = self.movies_data[movieID].toarray().astype(np.float32).reshape(-1)
         return ((movieData, userID, movieID), np.float32(self.currentData[i][2]))
                     
-if __name__ == '__main__':    
-    transformed_dataset = finetuneDataset('./data/ratings.csv', './data/data.npy')
+if __name__ == '__main__': 
+    finetuneDataset("./data/ratings.csv", "./data/data.npy", training=False)
     
