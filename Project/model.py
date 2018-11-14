@@ -126,7 +126,7 @@ class neuralCollaborativeFilter(nn.Module):
 #        output = self.sigmoid(logits)
         return logits
 
-class CDL:
+class NHR:
     def __init__(self, input_size, nb_users, nb_items,
                  encoder_arch, encoder_config,
                  colab_arch, colab_config):
@@ -252,3 +252,13 @@ class CDL:
         self.encoder.eval()
         self.decoder.eval()
         self.NCF.eval()
+
+    def save(self,PATH):
+        torch.save(self.encoder,PATH+'encoder')
+        torch.save(self.decoder,PATH+'decoder')
+        torch.save(self.NCF,PATH+'NCF')
+
+    def load(self,PATH):
+        self.encoder = torch.load(PATH+'encoder')
+        self.decoder = torch.load(PATH+'decoder')
+        self.NCF = torch.load(PATH+'NCF')
