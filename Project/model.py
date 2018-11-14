@@ -31,8 +31,8 @@ class GaussianNoise(nn.Module):
 
 
 class textEncoder(nn.Module):
-    def __init__(self, input_size, noise_sigma=0.3, 
-                 layers=(512,256,128), dropout=0.9, batch_norm=False):
+    def __init__(self, input_size, layers, 
+                 dropout=0.5, noise_sigma=0.3, batch_norm=False):
         super().__init__()
         self.noiseLayer = GaussianNoise(sigma=noise_sigma)
         
@@ -57,8 +57,9 @@ class textEncoder(nn.Module):
         
 
 class textDecoder(nn.Module):
-    def __init__(self, output_size, layers=(128,256,512), dropout=0.9, batch_norm=True):
+    def __init__(self, output_size, layers, dropout=0.5, batch_norm=True):
         super().__init__()
+        layers = layers[::-1]
         self.layers = torch.nn.ModuleList()
         for i, size in enumerate(layers[:-1]):
             self.layers.append(nn.Linear(size, layers[i+1]))
@@ -78,102 +79,69 @@ class textDecoder(nn.Module):
             output = layer(output)
         return output
 
-
-class userEncoder(nn.Module):
-    def __init__(self, nb_users, layers=(64,), batch_norm=True, dropout= 0.5):
-        super().__init__()
+class neuralCollaborativeFilter(nn.Module):
+    def __init__(self, nb_users, nb_items, item_feat_size, layers, embed_size_mf, embed_size_mlp, dropout_rate_mf, dropout_rate_mlp, batch_norm=True):
+        super(neuralCollaborativeFilter, self).__init__()
+        self.dropout_rate_mf = dropout_rate_mf
+        self.dropout_rate_mlp = dropout_rate_mlp
         
-        self.layers = torch.nn.ModuleList()
-        for i, size in enumerate(layers):
-            if i == 0:
-                self.layers.append(nn.Embedding(nb_users, size))
-            else:
-                self.layers.append(nn.Linear(layers[i-1], size))
-                self.layers[-1].bias.data.fill_(0)
-                nn.init.xavier_normal_(self.layers[-1].weight.data)
-                self.layers.append(nn.ReLU())
-                self.layers.append(nn.Dropout(p=dropout))
-                if batch_norm:
-                    self.layers.append(nn.BatchNorm1d(size))
-
-    def forward(self, input):
-        output = input
-        for layer in self.layers:
-            output = layer(output)
-        return output
-
-
-class itemEncoder(nn.Module):
-    def __init__(self, nb_items, encoder_text_size=64, layers_encoder=(64,), layers_dense=(64,), batch_norm=True, dropout= 0.5):
-        super().__init__()
-        
-        self.layers_encoder = torch.nn.ModuleList()
-        for i, size in enumerate(layers_encoder):
-            if i == 0:
-                self.layers_encoder.append(nn.Embedding(nb_items, size))
-            else:
-                self.layers_encoder.append(nn.Linear(layers[i-1], size))
-                self.layers_encoder[-1].bias.data.fill_(0)
-                nn.init.xavier_normal_(self.layers_encoder[-1].weight.data)
-                self.layers_encoder.append(nn.ReLU())
-                self.layers_encoder.append(nn.Dropout(p=dropout))
-                if batch_norm:
-                    self.layers_encoder.append(nn.BatchNorm1d(size))
-        
-        self.layers_dense = torch.nn.ModuleList()
-        for i, size in enumerate(layers_dense):
-            if i == 0:
-                self.layers_dense.append(nn.Linear(encoder_text_size+layers_encoder[-1], size))
-            else:
-                self.layers_dense.append(nn.Linear(layers_dense[i-1], size))
-            self.layers_dense[-1].bias.data.fill_(0)
-            nn.init.xavier_normal_(self.layers_dense[-1].weight.data)
-            self.layers_dense.append(nn.ReLU())
-            self.layers_dense.append(nn.Dropout(p=dropout))
+        layers = [embed_size_mf + embed_size_mlp + item_feat_size] + layers
+    
+        #mf part
+        self.embedding_user_mf = torch.nn.Embedding(num_embeddings=nb_users, embedding_dim=embed_size_mf)
+        self.embedding_item_mf = torch.nn.Embedding(num_embeddings=nb_items, embedding_dim=embed_size_mf)
+    
+        #mlp part
+        self.embedding_user_mlp = torch.nn.Embedding(num_embeddings=nb_users, embedding_dim=embed_size_mlp)
+        self.embedding_item_mlp = torch.nn.Embedding(num_embeddings=nb_items, embedding_dim=embed_size_mlp)
+    
+        self.fc_layers = torch.nn.ModuleList()
+        for idx, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
+            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
+            self.fc_layers.append(torch.nn.ReLU())
+            self.fc_layers.append(torch.nn.Dropout(dropout_rate_mlp))
             if batch_norm:
-                self.layers_dense.append(nn.BatchNorm1d(size))
-
-    def forward(self, input, encoder_output):
-        output = input
-        for layer in self.layers_encoder:
-            output = layer(output)
+                self.fc_layers.append(nn.BatchNorm1d(out_size))
+    
+        self.logits = torch.nn.Linear(in_features=layers[-1] + embed_size_mf  , out_features=1)
         
-        output = torch.cat((output, encoder_output), dim=-1)
-        for layer in self.layers_dense:
-            output = layer(output)
-        return output
+    def forward(self, user_indices, item_indices, item_feat):
+        user_embedding_mlp = self.embedding_user_mlp(user_indices)
+        item_embedding_mlp = self.embedding_item_mlp(item_indices)
+        user_embedding_mf = self.embedding_user_mf(user_indices)
+        item_embedding_mf = self.embedding_item_mf(item_indices)
+    
+        #### mf part
+        mf_vector =torch.mul(user_embedding_mf, item_embedding_mf)
+        mf_vector = torch.nn.Dropout(self.dropout_rate_mf)(mf_vector)
+    
+        #### mlp part
+        mlp_vector = torch.cat([user_embedding_mlp, item_embedding_mlp, item_feat], dim=-1)  # the concat latent vector
+    
+        for idx, _ in enumerate(range(len(self.fc_layers))):
+            mlp_vector = self.fc_layers[idx](mlp_vector)
+    
+        vector = torch.cat([mlp_vector, mf_vector], dim=-1)
+        logits = self.logits(vector)
+#        output = self.sigmoid(logits)
+        return logits
 
 class CDL:
     def __init__(self, input_size, nb_users, nb_items,
-                 encoding_arch={'name': 'SDAE', 'layers':(256,128,64), 'lr':0.01, 'lambda_w':0.001, 'dropout':0.9},
-                 colab_arch={'name':'classic', 'lr':0.01, 'lambda_u': 0.001, 'lambda_v': 0.001}):
-        self.encoder = textEncoder(input_size, noise_sigma=0.3, 
-                                   layers=encoding_arch['layers'], 
-                                   dropout=encoding_arch['dropout'])
-        self.decoder = textDecoder(input_size, 
-                                   layers=encoding_arch['layers'][::-1], 
-                                   dropout=encoding_arch['dropout'])
-        self.userEncoder = userEncoder(nb_users)
-        self.itemEncoder = itemEncoder(nb_items)
+                 encoder_arch, encoder_config,
+                 colab_arch, colab_config):
+        self.encoder = textEncoder(input_size, noise_sigma=0.3, **encoder_arch)
+        self.decoder = textDecoder(input_size, **encoder_arch)
+        self.NCF = neuralCollaborativeFilter(nb_users, nb_items, item_feat_size=encoder_arch['layers'][-1], **colab_arch)
         
         if use_cuda:
             self.encoder = self.encoder.cuda()
             self.decoder = self.decoder.cuda()
-            self.itemEncoder = self.itemEncoder.cuda()
-            self.userEncoder = self.userEncoder.cuda()
+            self.NCF = self.NCF.cuda()
         
-        self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), 
-                                                  lr=encoding_arch['lr'], 
-                                                  weight_decay=encoding_arch['lambda_w'])
-        self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), 
-                                                  lr=encoding_arch['lr'], 
-                                                  weight_decay=encoding_arch['lambda_w'])
-        self.itemEncoder_optimizer = torch.optim.Adam(self.itemEncoder.parameters(), 
-                                                      lr=colab_arch['lr'], 
-                                                      weight_decay=colab_arch['lambda_u'])
-        self.userEncoder_optimizer = torch.optim.Adam(self.userEncoder.parameters(), 
-                                                      lr=colab_arch['lr'], 
-                                                      weight_decay=colab_arch['lambda_v'])
+        self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), **encoder_config)
+        self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), **encoder_config)
+        self.NCF_optimizer = torch.optim.Adam(self.NCF.parameters(), **colab_config)
         
         scheduler_params = {'factor':0.5, 
                             'patience':2, 
@@ -186,14 +154,16 @@ class CDL:
         
         self.encoder_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.encoder_optimizer, **scheduler_params)
         self.decoder_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer, **scheduler_params)
-        self.itemEncoder_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.itemEncoder_optimizer, **scheduler_params)
-        self.userEncoder_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.userEncoder_optimizer, **scheduler_params)
+        self.NCF_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.NCF_optimizer, **scheduler_params)
         
         
     def pretrain(self, input_variable, target_variable, train=False, last_batch=False):
         if use_cuda:
             input_variable = input_variable.cuda()
             target_variable = target_variable.cuda()
+        if not train:
+            input_variable = input_variable.detach()
+            target_variable = target_variable.detach()
             
         criterion = nn.MSELoss(reduction='elementwise_mean')
 
@@ -228,30 +198,27 @@ class CDL:
         user_indexes = input_variable[1]
         item_indexes = input_variable[2]
         
-        batch_size = user_indexes.shape[0]
-        
-        ratings = target_variable
+        ratings = target_variable.unsqueeze(1)
         
         if use_cuda:
             text = text.cuda()
             user_indexes = user_indexes.cuda()
             item_indexes = item_indexes.cuda()
             ratings = ratings.cuda()
-            print(text.shape, user_indexes.shape, item_indexes.shape, ratings.shape)
+        if not train:
+            text = text.detach()
+            user_indexes = user_indexes.detach()
+            item_indexes = item_indexes.detach()
+            ratings = ratings.detach()
 
         self.encoder_optimizer.zero_grad()
         self.decoder_optimizer.zero_grad()
-        self.userEncoder_optimizer.zero_grad()
-        self.itemEncoder_optimizer.zero_grad()
+        self.NCF_optimizer.zero_grad()
 
         loss = 0
         
         encoder_outputs = self.encoder(text)
-        user_embedding = self.userEncoder(user_indexes)
-        item_embedding = self.itemEncoder(item_indexes, encoder_outputs)
-        
-        predictions = torch.bmm(user_embedding.view(batch_size,1,-1), 
-                                item_embedding.view(batch_size,-1,1)).view(-1,1)
+        predictions = self.NCF(user_indexes, item_indexes, encoder_outputs)
         
         raw_loss = criterion(predictions, ratings)
 
@@ -267,26 +234,21 @@ class CDL:
             self.decoder_optimizer.step()
         
     #         torch.nn.utils.clip_grad_norm(encoder.parameters(), grad_clip)
-            self.itemEncoder_optimizer.step()
-
-    #         torch.nn.utils.clip_grad_norm(decoder.parameters(), grad_clip)
-            self.userEncoder_optimizer.step()
+            self.NCF_optimizer.step()
+            
         elif last_batch:
             self.encoder_scheduler.step(loss)
             self.decoder_scheduler.step(loss)
-            self.itemEncoder_scheduler.step(loss)
-            self.userEncoder_scheduler.step(loss)
+            self.NCF_scheduler.step(loss)
             
         return raw_loss.item()
     
     def train(self):
         self.encoder.train()
         self.decoder.train()
-        self.itemEncoder.train()
-        self.userEncoder.train()
+        self.NCF.train()
         
     def eval(self):
         self.encoder.eval()
         self.decoder.eval()
-        self.itemEncoder.eval()
-        self.userEncoder.eval()
+        self.NCF.eval()

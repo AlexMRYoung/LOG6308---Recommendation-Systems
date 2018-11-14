@@ -1,49 +1,82 @@
+import torch, pickle, os, csv
+from torch.utils.data import Dataset
+use_cuda = torch.cuda.is_available()
 import numpy as np
-from utils.helpers import batchify, timeSince
-from utils.tokenizer import tokenize_corpus
-from model import CDL
-import torch, pickle, argparse, os, time, random
-from torch.utils.data import Dataset, DataLoader
 
+class pretrainDataset:
+    def __init__(self, file_path, training=True):
+        
+        with open(file_path, 'rb') as file:
+            self.data = pickle.load(file)['data'].astype(np.float32)
+        self.data = self.data[:int(self.data.shape[0]*0.8)] if training else self.data[int(self.data.shape[0]*0.8):]
+                
+    def __len__(self):
+        return self.data.shape[0]
 
-class dataSet(Dataset):
+    def __getitem__(self, index):
+        
+        return (self.data.getrow(index).toarray().reshape(-1), self.data.getrow(index).toarray().reshape(-1))
+
+class finetuneDataset(Dataset):
     """Face Landmarks dataset."""
-    def __init__(self, transform=None):
+    def __init__(self, ratings_path, movies_data_path, training=True):
+        assert os.path.isfile(ratings_path)
         # Loading data
         encoding = 'utf-8'
-        path_to_data = './data/'
-        path = path_to_data+"dataEmbeded.pkl"
-
-        if not os.path.isfile(path_to_data+'processed_data0.npy'):
-            with open(path, 'rb') as pickler:
-                data = pickle.load(pickler)
-            processed_data = tokenize_corpus(data[:,0], stop_words = False, BoW = True)
-            for i in range(10):
-                with open(path_to_data+'processed_data'+str(i)+'.npy', 'wb') as file:
-                    pickle.dump(processed_data[len(processed_data)//10*i:len(processed_data)//10*(i+1),], file)
+        self.chunkSize = 1e5
+        self.folder_path = '.'.join(ratings_path.split('.')[:-1])
+        
+        with open(movies_data_path, 'rb') as file:
+            raw_data = pickle.load(file)
+            self.movies_data = raw_data['data']
+            self.movies_ids = dict([(id, i) for i, id in enumerate(raw_data['ids'])])
+        
+        if not os.path.isdir(self.folder_path):
+            os.mkdir(self.folder_path)
+            self.currentPart = 0
+            dataToSave = []
+            with open(ratings_path, 'r', encoding=encoding, newline='') as f:
+                reader = csv.reader(f)
+                next(reader, None)
+                for i, line in enumerate(reader):
+                    if int(line[1]) in self.movies_ids:
+                        if len(dataToSave) < self.chunkSize:
+                            dataToSave.append((int(line[0]),int(line[1]), float(line[2])))
+                        else:
+                            with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'wb') as new_file:
+                                pickle.dump(dataToSave, new_file) 
+                            dataToSave = []
+                            self.currentPart += 1
+            if len(dataToSave) != 0:
+                with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'wb') as new_file:
+                    pickle.dump(dataToSave, new_file)
+            self.length = i
+        else:
+            files = os.listdir(self.folder_path)
+            files_nb = sorted([int(name.split('_')[1].split('.')[0]) for name in files])
+            with open(self.folder_path+'/chunk_'+str(files_nb[-1])+'.npy', 'rb') as pickler:
+                self.length = int(len(pickle.load(pickler)) + (len(files) - 1) * self.chunkSize - 1)
         
         self.currentPart = 0
-        with open(path_to_data+'processed_data'+self.currentPart+'.npy', 'rb') as pickler:
-                self.currentData = pickle.load(pickler)
-        self.currentDataChosen = 0
+        with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'rb') as pickler:
+            self.currentData = pickle.load(pickler)
 
     def __len__(self):
-        return len(self.currentData)*10
+        return self.length
 
     def __getitem__(self, idx):
-        # middle of a file
-        if self.currentDataChosen < len(self.currentData):
-            return self.currentData[self.currentDataChosen,]
         # go to next file
-        else if self.currentPart < 9:
-            self.currentPart += 1
-            with open(path_to_data+'processed_data'+self.currentPart+'.npy', 'rb') as pickler:
+        if idx // self.chunkSize != self.currentPart:
+            self.currentPart = int(idx // self.chunkSize)
+            with open(self.folder_path+'/chunk_'+str(self.currentPart)+'.npy', 'rb') as pickler:
                 self.currentData = pickle.load(pickler)
-            self.currentDataChosen = 0
-            return self.currentData[self.currentDataChosen,]
-        # get back to the first file
-        self.currentPart = 0
-        with open(path_to_data+'processed_data'+self.currentPart+'.npy', 'rb') as pickler:
-            self.currentData = pickle.load(pickler)
-        self.currentDataChosen = 0
-        return self.currentData[self.currentDataChosen,]
+        i = int(idx - self.currentPart * self.chunkSize)
+        
+        userID = self.currentData[i][0] - 1
+        movieID = self.movies_ids[self.currentData[i][1]]
+        movieData = self.movies_data[movieID].toarray().astype(np.float32).reshape(-1)
+        return ((movieData, userID, movieID), np.float32(self.currentData[i][2]))
+                    
+if __name__ == '__main__':    
+    transformed_dataset = finetuneDataset('./data/ratings.csv', './data/data.npy')
+    

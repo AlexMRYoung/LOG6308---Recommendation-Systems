@@ -1,31 +1,23 @@
 import numpy as np
-from utils.helpers import batchify, timeSince
-from utils.tokenizer import tokenize_corpus
+from utils.helpers import timeSince
 from model import CDL
-import torch, pickle, argparse, os, time, random
-from torch.utils.data import Dataset, DataLoader
-from data import dataSet
+import argparse, time
+from torch.utils.data import DataLoader
+from data import pretrainDataset, finetuneDataset
 
-def trainIters(X, model, finetune=False, n_epochs=10, iter=1, start_epoch=1, local_save_every=1000, 
+def trainIters(file_path, model, finetune=False, n_epochs=10, iter=1, start_epoch=1, local_save_every=1000, 
                print_every=10, plot_every=100, save_every=5000, batch_size=64):
     start = time.time()
     total_iter = 0
     
     if finetune:
-        ratings = X[1]
-        X = X[0]
-    
-    indexes = list(range(len(ratings)))
-    random.shuffle(indexes)
-    
-    X_train = X if finetune else X[indexes[:-len(indexes)//5]]
-    X_valid = X if finetune else X[indexes[-len(indexes)//5:]]
-    ratings_train = ratings[indexes[:-len(indexes)//5]] if finetune else None
-    ratings_valid = ratings[indexes[-len(indexes)//5:]] if finetune else None
-    
-    training_generator = batchify((X_train, ratings_train), finetune, batch_size, training=True)
-    valid_generator = batchify((X_valid, ratings_valid), finetune, batch_size)
-    
+        training_dataset = finetuneDataset(file_path, "./data/data.npy", training=True)
+        valid_dataset = finetuneDataset(file_path, "./data/data.npy", training=False)
+    else:
+        training_dataset = pretrainDataset(file_path)
+        valid_dataset = pretrainDataset(file_path,training=False)
+    training_generator = DataLoader(training_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+    valid_generator = DataLoader(valid_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     for epoch in range(n_epochs):
         try:            
             plot_losses = []
@@ -34,9 +26,7 @@ def trainIters(X, model, finetune=False, n_epochs=10, iter=1, start_epoch=1, loc
             save_loss_total = []
 
             model.train()
-
-            for input_variable, target_variable in training_generator: 
-                print(target_variable)
+            for input_variable, target_variable in training_generator:
                 if finetune:
                     loss =  model.finetune(input_variable, target_variable, train=True)
                 else:
@@ -50,7 +40,7 @@ def trainIters(X, model, finetune=False, n_epochs=10, iter=1, start_epoch=1, loc
                     print_loss_avg = np.mean(print_loss_total)
                     print_loss_total = []
                     print('%s (%6.f %3.f%%) | Training loss: %.4e' % (timeSince(start, total_iter / len(training_generator) / n_epochs),
-                                                 iter, iter / len(training_generator) * 100, print_loss_avg))
+                                                 iter, iter / len(training_generator) * 100, np.sqrt(print_loss_avg)))
 
 #                if iter % plot_every == 0:
 #                    plot_loss_avg = np.mean(plot_loss_total)
@@ -97,32 +87,24 @@ if __name__ == '__main__':
     parser.add_argument('--restore', type=str,default='n',help='restore ? (y/n)')
     parser.add_argument('--summaries_dir', type=str,default='./summaries',help='summary directory')
     FLAGS, unparsed = parser.parse_known_args()
-     
-    import csv
-    ratings = np.zeros((1000,3))
-    
-    transformed_dataset = dataSet()
-    processed_data = DataLoader(transformed_dataset, batch_size=40, shuffle=True, num_workers=5)
 
-    with open('./data/ratings_small.csv', 'r', newline='', encoding='utf-8') as f:
-        csv_reader = csv.reader(f)
-        for i, line in enumerate(csv_reader):
-            if i != 0:
-                ratings[i][0] = int(line[0]) - 1
-                ratings[i][1] = int(line[1]) - 1
-                ratings[i][2] = line[2]
-                if i == ratings.shape[0] - 1:
-                    break
-#    num_user = int( max(train_ratings[:,0].max(), test_ratings[:,0].max()) + 1 )
-#    num_item = int( max(train_ratings[:,1].max(), test_ratings[:,1].max()) + 1 )
+#    with open('./data/ratings/chunk_259.npy', 'rb') as pickler:
+#        nb_users = pickle.load(pickler)[-1][0]
+#    print(nb_users)
     
-    i = [1,2,3,4]
+    encoder_arch={'layers':(256,128,128), 'dropout':0.5} 
+    encoder_config={'lr':0.1, 'weight_decay':0.001}
+    colab_arch={'layers':[128,64,64], 'embed_size_mf':32, 'embed_size_mlp':32 ,
+                'dropout_rate_mf':0.5, 'dropout_rate_mlp':0.5}
+    colab_config={'lr':0.05, 'weight_decay':0.001}
     
-#    print(processed_data[i])
-    
-    
-    model = CDL(input_size=processed_data.shape[1], nb_users=1, nb_items=1)
+    model = CDL(input_size=90366, nb_users=270895, nb_items=46000, 
+                encoder_arch=encoder_arch, encoder_config=encoder_config, 
+                colab_arch=colab_arch, colab_config=colab_config)
     
     start_iter = 1
     
-    trainIters((processed_data, ratings), model, finetune=True, iter=start_iter)
+    trainIters("./data/data.npy", model, finetune=False, iter=start_iter)
+    trainIters("./data/ratings.csv", model, finetune=True, iter=start_iter)
+    
+

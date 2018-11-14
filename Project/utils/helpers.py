@@ -46,15 +46,7 @@ class batchify:
             users = torch.tensor(batch[:,0].astype(int))
             items = torch.tensor(batch[:,1].astype(int))
             ratings = torch.tensor(batch[:,2].astype(np.float32), requires_grad = self.training)
-            print('test')
-            try:
-                print(list(batch[:,1].astype(int)))
-                print(self.data_2[list(batch[:,1].astype(int))])
-            except:
-                print(self.data_2[[0,1,2,3]])
-            print('test')
             itemsFeature = torch.tensor(self.data_2[batch[:,1].astype(int), :].astype(np.float32), requires_grad = self.training)
-            print(itemsFeature)
             input_variable = (itemsFeature, users, items)
             target_variable = ratings
         else:
