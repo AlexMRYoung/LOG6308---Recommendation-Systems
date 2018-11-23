@@ -1,6 +1,7 @@
 import numpy as np
-import csv
+import csv, pickle
 from sklearn.preprocessing import MultiLabelBinarizer
+from scipy.sparse import hstack
 import pickle as pkl
 from utils.tokenizer import tokenize_corpus
 
@@ -28,7 +29,6 @@ with open('./data/links.csv', 'r', encoding='utf-8', newline='') as f:
             id_to_movieId[int(line[2])] = int(line[0])
         except:
             pass
-print(len(id_to_movieId))
 notIn=[]
 
 with open('./data/movies_metadata.csv', encoding= 'utf-8') as csvFile:
@@ -51,17 +51,14 @@ with open('./data/movies_metadata.csv', encoding= 'utf-8') as csvFile:
         dataEmbeded[i, 9] = getNames(row['spoken_languages'])
         i += 1
 
-one_hot = MultiLabelBinarizer()
+one_hot = MultiLabelBinarizer(sparse_output=True)
 genres = one_hot.fit_transform(dataEmbeded[:,4])
 production_companies = one_hot.fit_transform(dataEmbeded[:,6])
 spoken_languages = one_hot.fit_transform(dataEmbeded[:,9])
 BoW = tokenize_corpus(dataEmbeded[:,0], stop_words = False, BoW = True)
 
+data =  hstack([BoW, genres])
 
-
-dataEmbeded = np.delete(dataEmbeded, [4, 6, 9], 1)
-dataEmbeded = np.c_[dataEmbeded,genres]
-dataEmbeded = np.c_[dataEmbeded,spoken_languages]
 
 ## production_companies too large !
 #dataEmbeded = np.c_[dataEmbeded,production_companies]
@@ -76,7 +73,7 @@ with open('./data/dataEmbeded.pkl', 'wb') as pikeler:
     pkl.dump(dataEmbeded, pikeler)
     
 with open('./data/data.npy', 'wb') as pikeler:
-    data = {'ids':dataEmbeded[:, 1], 'data':BoW}
+    data = {'ids':dataEmbeded[:, 1], 'data':data}
     pkl.dump(data, pikeler)
 
 """ get the data back
