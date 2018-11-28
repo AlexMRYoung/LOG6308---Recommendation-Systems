@@ -24,7 +24,7 @@ class pretrainDataset:
 class finetuneDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, ratings_path, movies_data_path, training=True, random_state=1):
+    def __init__(self, ratings_path, movies_data_path, folder='train', random_state=1):
         assert os.path.isfile(ratings_path)
         # Loading data
         self.folder_path = '.'.join(ratings_path.split('.')[:-1])
@@ -45,8 +45,10 @@ class finetuneDataset(Dataset):
             os.mkdir(self.folder_path)
             train_folder_path = self.folder_path + '/train/'
             valid_folder_path = self.folder_path + '/valid/'
+            test_folder_path = self.folder_path + '/test/'
             os.mkdir(train_folder_path)
             os.mkdir(valid_folder_path)
+            os.mkdir(test_folder_path)
 
             ratings_df = pd.read_csv(ratings_path)
             ratings_df = sk_shuffle(ratings_df).reset_index(drop=True)
@@ -62,15 +64,27 @@ class finetuneDataset(Dataset):
             dataToSave = []
             for i, line in ratings_df.iterrows():
                 if int(line['movieId']) in self.movies_ids:
+                    # Train set
                     if i < ratings_df.shape[0] * 0.8:
                         subfolder_path = train_folder_path
-                    else:
+                    # Valid set
+                    elif i < ratings_df.shape[0] * 0.9:
                         if subfolder_path == train_folder_path:
-                            with open(subfolder_path + 'chunk_' + str(self.currentPart) + '.npy', 'wb') as new_file:
-                                pickle.dump(dataToSave, new_file)
+                            if len(dataToSave) > 0:
+                                with open(subfolder_path + 'chunk_' + str(self.currentPart) + '.npy', 'wb') as new_file:
+                                    pickle.dump(dataToSave, new_file)
                                 dataToSave = []
+                            self.currentPart = 0
                         subfolder_path = valid_folder_path
-                        self.currentPart = 0
+                    # Test set
+                    else:
+                        if subfolder_path == valid_folder_path:
+                            if len(dataToSave) > 0:
+                                with open(subfolder_path + 'chunk_' + str(self.currentPart) + '.npy', 'wb') as new_file:
+                                    pickle.dump(dataToSave, new_file)
+                                dataToSave = []
+                            self.currentPart = 0
+                        subfolder_path = test_folder_path
                     if len(dataToSave) < self.chunkSize:
                         dataToSave.append((int(line['userId']), int(line['movieId']), float(line['rating'])))
                     else:
@@ -83,7 +97,7 @@ class finetuneDataset(Dataset):
                 with open(subfolder_path + 'chunk_' + str(self.currentPart) + '.npy', 'wb') as new_file:
                     pickle.dump(dataToSave, new_file)
 
-        self.folder_path += '/train' if training else '/valid'
+        self.folder_path += '/' + folder
         files = os.listdir(self.folder_path)
         files_nb = sorted([int(name.split('_')[1].split('.')[0]) for name in files])
         if len(files) > 1:
